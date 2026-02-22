@@ -6,37 +6,67 @@ import java.util.*;
 
 public class Server {
     private static final int PORT = 12345;
+    private static final int MAX_PLAYERS = 2;
     private static List<ClientHandler> clients = new ArrayList<>();
     private static char[][] board = new char[3][3];
     private static char currentPlayer = 'X';
-    private static boolean gameStarted = false;
-    private static String playerXName, playerOName;
-    private static boolean restartRequested = false;
-    private static String restartRequester;
-    private static boolean secondPlayerConfirmed = false;
-
-    // Statistics fields
+    private static String playerXName = "";
+    private static String playerOName = "";
     private static int playerXWins = 0;
     private static int playerOWins = 0;
     private static int draws = 0;
+    private static ServerSocket serverSocket;
 
     public static void main(String[] args) {
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            System.out.println("Server started. Waiting for players...");
+        System.out.println("========================================");
+        System.out.println("  NETWORKED TIC-TAC-TOE SERVER");
+        System.out.println("========================================");
 
-            while (clients.size() < 2) {
+        try {
+            serverSocket = new ServerSocket(PORT);
+            System.out.println("Server started on port: " + PORT);
+            System.out.println("Server IP Addresses:");
+            printServerIPs();
+            System.out.println("Waiting for 2 players to connect...");
+
+            while (clients.size() < MAX_PLAYERS) {
                 Socket socket = serverSocket.accept();
-                System.out.println("Player connected: " + socket);
-                ClientHandler clientHandler = new ClientHandler(socket, clients.size() + 1);
-                clients.add(clientHandler);
-                new Thread(clientHandler).start();
+                socket.setKeepAlive(true);
+
+                int playerId = clients.size() + 1;
+                System.out.println("Player " + playerId + " connected: " +
+                        socket.getInetAddress().getHostAddress());
+
+                ClientHandler handler = new ClientHandler(socket, playerId);
+                clients.add(handler);
+                new Thread(handler).start();
             }
 
-            System.out.println("Both players connected. Game can start.");
+            System.out.println("Both players connected. Game starting!");
             broadcast("START");
-            gameStarted = true;
         } catch (IOException e) {
+            System.err.println("Server error: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    private static void printServerIPs() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                if (iface.isUp() && !iface.isLoopback()) {
+                    Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                    while (addresses.hasMoreElements()) {
+                        InetAddress addr = addresses.nextElement();
+                        if (addr instanceof Inet4Address) {
+                            System.out.println("  -> " + addr.getHostAddress());
+                        }
+                    }
+                }
+            }
+        } catch (SocketException e) {
+            System.out.println("  Unable to retrieve IPs");
         }
     }
 
@@ -48,33 +78,24 @@ public class Server {
             broadcast("TURN " + currentPlayer);
             checkGameStatus();
             return true;
-        } else {
-            notifyWrongMove(client);
-            return false;
         }
-    }
-
-    private static void notifyWrongMove(ClientHandler client) {
-        client.sendMessage("WRONG_MOVE");
+        return false;
     }
 
     private static List<int[]> checkWin(char player) {
         List<int[]> cells = new ArrayList<>();
-        // Check rows
         for (int i = 0; i < 3; i++) {
             if (board[i][0] == player && board[i][1] == player && board[i][2] == player) {
                 Collections.addAll(cells, new int[]{i, 0}, new int[]{i, 1}, new int[]{i, 2});
                 return cells;
             }
         }
-        // Check columns
         for (int j = 0; j < 3; j++) {
             if (board[0][j] == player && board[1][j] == player && board[2][j] == player) {
                 Collections.addAll(cells, new int[]{0, j}, new int[]{1, j}, new int[]{2, j});
                 return cells;
             }
         }
-        // Check diagonals
         if (board[0][0] == player && board[1][1] == player && board[2][2] == player) {
             Collections.addAll(cells, new int[]{0, 0}, new int[]{1, 1}, new int[]{2, 2});
             return cells;
@@ -90,23 +111,25 @@ public class Server {
         List<int[]> winCells = checkWin('X');
         if (winCells != null) {
             playerXWins++;
-            String winMsg = "WIN X " + playerXName;
-            for (int[] cell : winCells) winMsg += " " + cell[0] + " " + cell[1];
-            broadcast(winMsg);
-            broadcastStats();
-        } else {
-            winCells = checkWin('O');
-            if (winCells != null) {
-                playerOWins++;
-                String winMsg = "WIN O " + playerOName;
-                for (int[] cell : winCells) winMsg += " " + cell[0] + " " + cell[1];
-                broadcast(winMsg);
-                broadcastStats();
-            } else if (isBoardFull()) {
-                draws++;
-                broadcast("DRAW");
-                broadcastStats();
-            }
+            String msg = "WIN X " + playerXName;
+            for (int[] cell : winCells) msg += " " + cell[0] + " " + cell[1];
+            broadcast(msg);
+            broadcast("STATS " + playerXWins + " " + playerOWins + " " + draws);
+            return;
+        }
+        winCells = checkWin('O');
+        if (winCells != null) {
+            playerOWins++;
+            String msg = "WIN O " + playerOName;
+            for (int[] cell : winCells) msg += " " + cell[0] + " " + cell[1];
+            broadcast(msg);
+            broadcast("STATS " + playerXWins + " " + playerOWins + " " + draws);
+            return;
+        }
+        if (isBoardFull()) {
+            draws++;
+            broadcast("DRAW");
+            broadcast("STATS " + playerXWins + " " + playerOWins + " " + draws);
         }
     }
 
@@ -119,58 +142,21 @@ public class Server {
         return true;
     }
 
-    public static void broadcast(String message) {
-        for (ClientHandler client : clients) {
-            client.sendMessage(message);
-        }
-    }
-
     public static synchronized void resetGame() {
         board = new char[3][3];
         currentPlayer = 'X';
         broadcast("RESET");
-        restartRequested = false;
-        restartRequester = null;
-        secondPlayerConfirmed = false;
     }
 
     public static void setPlayerName(char player, String name) {
-        if (player == 'X') {
-            playerXName = name;
-        } else if (player == 'O') {
-            playerOName = name;
-        }
+        if (player == 'X') playerXName = name;
+        else if (player == 'O') playerOName = name;
     }
 
-    public static synchronized void requestRestart(String playerName) {
-        if (!restartRequested) {
-            restartRequested = true;
-            restartRequester = playerName;
-            broadcast("RESTART_REQUEST " + playerName);
+    public static void broadcast(String message) {
+        for (ClientHandler client : clients) {
+            client.sendMessage(message);
         }
-    }
-
-    public static synchronized void confirmRestart(boolean confirm, String playerName) {
-        if (restartRequested) {
-            if (confirm) {
-                if (!playerName.equals(restartRequester)) {
-                    secondPlayerConfirmed = true;
-                }
-                if (secondPlayerConfirmed) {
-                    broadcast("RESTART_CONFIRMED");
-                    resetGame();
-                }
-            } else {
-                broadcast("RESTART_DECLINED " + playerName);
-                restartRequested = false;
-                restartRequester = null;
-                secondPlayerConfirmed = false;
-            }
-        }
-    }
-
-    private static void broadcastStats() {
-        broadcast("STATS " + playerXWins + " " + playerOWins + " " + draws);
     }
 }
 
@@ -197,8 +183,9 @@ class ClientHandler implements Runnable {
         try {
             out.println("ASSIGN " + playerId);
             playerName = in.readLine();
-            System.out.println("Player " + playerId + " name: " + playerName);
+            if (playerName == null || playerName.isEmpty()) playerName = "Player" + playerId;
 
+            System.out.println("Player " + playerId + " name: " + playerName);
             Server.setPlayerName((playerId == 1) ? 'X' : 'O', playerName);
 
             String inputLine;
@@ -209,22 +196,19 @@ class ClientHandler implements Runnable {
                     int col = Integer.parseInt(tokens[2]);
                     char player = tokens[3].charAt(0);
                     Server.makeMove(row, col, player, this);
-                } else if (tokens[0].equals("RESTART_REQUEST")) {
-                    Server.requestRestart(playerName);
-                } else if (tokens[0].equals("RESTART_CONFIRM")) {
-                    boolean confirm = Boolean.parseBoolean(tokens[1]);
-                    Server.confirmRestart(confirm, playerName);
+                } else if (tokens[0].equals("RESET_REQUEST")) {
+                    Server.resetGame();
                 } else if (tokens[0].equals("QUIT")) {
                     Server.broadcast("QUIT " + playerName);
                     break;
                 }
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            System.err.println("Player " + playerId + " disconnected");
         }
     }
 
     public void sendMessage(String message) {
-        out.println(message);
+        if (out != null) out.println(message);
     }
 }
