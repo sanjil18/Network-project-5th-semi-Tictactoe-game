@@ -6,6 +6,7 @@ import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
 import java.net.*;
+import javax.sound.sampled.*;
 
 public class Client extends JFrame {
     private JButton[][] buttons = new JButton[3][3];
@@ -15,7 +16,7 @@ public class Client extends JFrame {
     private JButton restartButton;
     private JButton quitButton;
     private JPanel boardPanel;
-
+    
     private char playerSymbol;
     private String playerName;
     private Socket socket;
@@ -24,7 +25,9 @@ public class Client extends JFrame {
     private int myWins = 0;
     private int myLosses = 0;
     private int draws = 0;
-
+    
+    private Clip backgroundClip, moveClip, errorClip, winClip, loseClip, drawClip;
+    
     private final Color BG_COLOR = new Color(34, 40, 49);
     private final Color BUTTON_COLOR = new Color(57, 62, 70);
     private final Color BUTTON_HOVER = new Color(0, 173, 181);
@@ -40,6 +43,8 @@ public class Client extends JFrame {
         getContentPane().setBackground(BG_COLOR);
         setResizable(false);
 
+        loadSounds();
+
         try {
             socket = new Socket(serverAddress, 12345);
             out = new PrintWriter(socket.getOutputStream(), true);
@@ -49,7 +54,7 @@ public class Client extends JFrame {
             if (message.startsWith("ASSIGN")) {
                 int playerId = Integer.parseInt(message.split(" ")[1]);
                 playerSymbol = (playerId == 1) ? 'X' : 'O';
-
+                
                 playerName = JOptionPane.showInputDialog(this, "Enter your name:");
                 if (playerName == null || playerName.trim().isEmpty()) {
                     playerName = "Player " + playerId;
@@ -62,9 +67,14 @@ public class Client extends JFrame {
             setLocationRelativeTo(null);
             setVisible(true);
 
+            if (backgroundClip != null) {
+                backgroundClip.loop(Clip.LOOP_CONTINUOUSLY);
+                backgroundClip.start();
+            }
+
         } catch (IOException e) {
-            JOptionPane.showMessageDialog(this, "Cannot connect to server!",
-                    "Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Cannot connect to server!", 
+                "Error", JOptionPane.ERROR_MESSAGE);
             System.exit(1);
         }
     }
@@ -73,7 +83,7 @@ public class Client extends JFrame {
         JPanel titlePanel = new JPanel();
         titlePanel.setBackground(BG_COLOR);
         titlePanel.setBorder(new EmptyBorder(10, 10, 5, 10));
-
+        
         titleLabel = new JLabel("TIC-TAC-TOE", SwingConstants.CENTER);
         titleLabel.setFont(new Font("Arial", Font.BOLD, 32));
         titleLabel.setForeground(TEXT_COLOR);
@@ -98,10 +108,10 @@ public class Client extends JFrame {
                 buttons[i][j].setBackground(BUTTON_COLOR);
                 buttons[i][j].setForeground(TEXT_COLOR);
                 buttons[i][j].setBorder(BorderFactory.createLineBorder(BG_COLOR, 2));
-
+                
                 final int row = i, col = j;
                 buttons[i][j].addActionListener(e -> handleButtonClick(row, col));
-
+                
                 buttons[i][j].addMouseListener(new MouseAdapter() {
                     public void mouseEntered(MouseEvent e) {
                         if (buttons[row][col].getText().isEmpty()) {
@@ -173,8 +183,8 @@ public class Client extends JFrame {
             }
         } catch (IOException e) {
             SwingUtilities.invokeLater(() -> {
-                JOptionPane.showMessageDialog(this, "Connection lost!",
-                        "Error", JOptionPane.ERROR_MESSAGE);
+                JOptionPane.showMessageDialog(this, "Connection lost!", 
+                    "Error", JOptionPane.ERROR_MESSAGE);
                 System.exit(1);
             });
         }
@@ -182,7 +192,7 @@ public class Client extends JFrame {
 
     private void processMessage(String message) {
         String[] parts = message.split(" ");
-
+        
         if (parts[0].equals("START")) {
             statusLabel.setText("Game started! Waiting...");
         } else if (parts[0].equals("MOVE")) {
@@ -191,6 +201,7 @@ public class Client extends JFrame {
             char player = parts[3].charAt(0);
             buttons[row][col].setText(String.valueOf(player));
             buttons[row][col].setForeground(player == 'X' ? X_COLOR : O_COLOR);
+            playSound(moveClip);
         } else if (parts[0].equals("TURN")) {
             char turn = parts[1].charAt(0);
             if (turn == playerSymbol) {
@@ -206,23 +217,25 @@ public class Client extends JFrame {
             statusLabel.setText("Draw! 🤝");
             enableBoard(false);
             restartButton.setEnabled(true);
+            playSound(drawClip);
         } else if (parts[0].equals("RESET")) {
             resetBoard();
         } else if (parts[0].equals("STATS")) {
             updateStats(parts);
         } else if (parts[0].equals("WRONG_MOVE")) {
-            JOptionPane.showMessageDialog(this, "Invalid move!",
-                    "Error", JOptionPane.WARNING_MESSAGE);
+            playSound(errorClip);
+            JOptionPane.showMessageDialog(this, "Invalid move!", 
+                "Error", JOptionPane.WARNING_MESSAGE);
         } else if (parts[0].equals("RESTART_REQUEST")) {
             handleRestartRequest(parts[1]);
         } else if (parts[0].equals("RESTART_CONFIRMED")) {
             statusLabel.setText("Restarting...");
         } else if (parts[0].equals("RESTART_DECLINED")) {
-            JOptionPane.showMessageDialog(this, parts[1] + " declined restart.",
-                    "Declined", JOptionPane.INFORMATION_MESSAGE);
+            JOptionPane.showMessageDialog(this, parts[1] + " declined restart.", 
+                "Declined", JOptionPane.INFORMATION_MESSAGE);
         } else if (parts[0].equals("QUIT")) {
-            JOptionPane.showMessageDialog(this, parts[1] + " quit!",
-                    "Game Over", JOptionPane.INFORMATION_MESSAGE);
+            JOptionPane.showMessageDialog(this, parts[1] + " quit!", 
+                "Game Over", JOptionPane.INFORMATION_MESSAGE);
             System.exit(0);
         }
     }
@@ -230,11 +243,13 @@ public class Client extends JFrame {
     private void handleWin(String[] parts) {
         char winner = parts[1].charAt(0);
         enableBoard(false);
-
+        
         if (winner == playerSymbol) {
             statusLabel.setText("You WIN! 🎉");
+            playSound(winClip);
         } else {
             statusLabel.setText("You LOSE! 😢");
+            playSound(loseClip);
         }
 
         for (int i = 3; i < parts.length; i += 2) {
@@ -300,9 +315,9 @@ public class Client extends JFrame {
 
     private void handleRestartRequest(String requester) {
         if (!requester.equals(playerName)) {
-            int choice = JOptionPane.showConfirmDialog(this,
-                    requester + " wants to restart. Agree?",
-                    "Restart?", JOptionPane.YES_NO_OPTION);
+            int choice = JOptionPane.showConfirmDialog(this, 
+                requester + " wants to restart. Agree?", 
+                "Restart?", JOptionPane.YES_NO_OPTION);
             out.println("RESTART_CONFIRM " + (choice == JOptionPane.YES_OPTION));
         }
     }
@@ -310,6 +325,37 @@ public class Client extends JFrame {
     private void quit() {
         out.println("QUIT");
         System.exit(0);
+    }
+
+    private void loadSounds() {
+        backgroundClip = loadSound("/com/resources/sounds/background.wav");
+        moveClip = loadSound("/com/resources/sounds/move.wav");
+        errorClip = loadSound("/com/resources/sounds/error.wav");
+        winClip = loadSound("/com/resources/sounds/win.wav");
+        loseClip = loadSound("/com/resources/sounds/lose.wav");
+        drawClip = loadSound("/com/resources/sounds/draw.wav");
+    }
+
+    private Clip loadSound(String path) {
+        try {
+            InputStream audioSrc = getClass().getResourceAsStream(path);
+            if (audioSrc == null) return null;
+            InputStream bufferedIn = new BufferedInputStream(audioSrc);
+            AudioInputStream audioStream = AudioSystem.getAudioInputStream(bufferedIn);
+            Clip clip = AudioSystem.getClip();
+            clip.open(audioStream);
+            return clip;
+        } catch (Exception e) {
+            System.err.println("Cannot load sound: " + path);
+            return null;
+        }
+    }
+
+    private void playSound(Clip clip) {
+        if (clip != null) {
+            clip.setFramePosition(0);
+            clip.start();
+        }
     }
 
     public static void main(String[] args) {
