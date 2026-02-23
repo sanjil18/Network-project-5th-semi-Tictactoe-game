@@ -15,33 +15,35 @@ public class Server {
     private static int playerXWins = 0;
     private static int playerOWins = 0;
     private static int draws = 0;
+    private static boolean restartRequested = false;
+    private static String restartRequester = null;
     private static ServerSocket serverSocket;
 
     public static void main(String[] args) {
         System.out.println("========================================");
         System.out.println("  NETWORKED TIC-TAC-TOE SERVER");
         System.out.println("========================================");
-
+        
         try {
             serverSocket = new ServerSocket(PORT);
             System.out.println("Server started on port: " + PORT);
             System.out.println("Server IP Addresses:");
             printServerIPs();
             System.out.println("Waiting for 2 players to connect...");
-
+            
             while (clients.size() < MAX_PLAYERS) {
                 Socket socket = serverSocket.accept();
                 socket.setKeepAlive(true);
-
+                
                 int playerId = clients.size() + 1;
-                System.out.println("Player " + playerId + " connected: " +
-                        socket.getInetAddress().getHostAddress());
-
+                System.out.println("Player " + playerId + " connected: " + 
+                    socket.getInetAddress().getHostAddress());
+                
                 ClientHandler handler = new ClientHandler(socket, playerId);
                 clients.add(handler);
                 new Thread(handler).start();
             }
-
+            
             System.out.println("Both players connected. Game starting!");
             broadcast("START");
         } catch (IOException e) {
@@ -78,8 +80,10 @@ public class Server {
             broadcast("TURN " + currentPlayer);
             checkGameStatus();
             return true;
+        } else {
+            client.sendMessage("WRONG_MOVE");
+            return false;
         }
-        return false;
     }
 
     private static List<int[]> checkWin(char player) {
@@ -146,6 +150,29 @@ public class Server {
         board = new char[3][3];
         currentPlayer = 'X';
         broadcast("RESET");
+        restartRequested = false;
+        restartRequester = null;
+    }
+
+    public static synchronized void requestRestart(String playerName) {
+        if (!restartRequested) {
+            restartRequested = true;
+            restartRequester = playerName;
+            broadcast("RESTART_REQUEST " + playerName);
+        }
+    }
+
+    public static synchronized void confirmRestart(boolean confirm, String playerName) {
+        if (restartRequested && !playerName.equals(restartRequester)) {
+            if (confirm) {
+                broadcast("RESTART_CONFIRMED");
+                resetGame();
+            } else {
+                broadcast("RESTART_DECLINED " + playerName);
+                restartRequested = false;
+                restartRequester = null;
+            }
+        }
     }
 
     public static void setPlayerName(char player, String name) {
@@ -154,6 +181,7 @@ public class Server {
     }
 
     public static void broadcast(String message) {
+        System.out.println("[BROADCAST] " + message);
         for (ClientHandler client : clients) {
             client.sendMessage(message);
         }
@@ -184,20 +212,25 @@ class ClientHandler implements Runnable {
             out.println("ASSIGN " + playerId);
             playerName = in.readLine();
             if (playerName == null || playerName.isEmpty()) playerName = "Player" + playerId;
-
+            
             System.out.println("Player " + playerId + " name: " + playerName);
             Server.setPlayerName((playerId == 1) ? 'X' : 'O', playerName);
 
             String inputLine;
             while ((inputLine = in.readLine()) != null) {
+                System.out.println("[CLIENT-" + playerId + "] Received: " + inputLine);
                 String[] tokens = inputLine.split(" ");
+                
                 if (tokens[0].equals("MOVE")) {
                     int row = Integer.parseInt(tokens[1]);
                     int col = Integer.parseInt(tokens[2]);
                     char player = tokens[3].charAt(0);
                     Server.makeMove(row, col, player, this);
-                } else if (tokens[0].equals("RESET_REQUEST")) {
-                    Server.resetGame();
+                } else if (tokens[0].equals("RESTART_REQUEST")) {
+                    Server.requestRestart(playerName);
+                } else if (tokens[0].equals("RESTART_CONFIRM")) {
+                    boolean confirm = Boolean.parseBoolean(tokens[1]);
+                    Server.confirmRestart(confirm, playerName);
                 } else if (tokens[0].equals("QUIT")) {
                     Server.broadcast("QUIT " + playerName);
                     break;
@@ -205,10 +238,18 @@ class ClientHandler implements Runnable {
             }
         } catch (IOException e) {
             System.err.println("Player " + playerId + " disconnected");
+        } finally {
+            try {
+                if (socket != null) socket.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     }
 
     public void sendMessage(String message) {
-        if (out != null) out.println(message);
+        if (out != null) {
+            out.println(message);
+        }
     }
 }
